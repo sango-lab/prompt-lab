@@ -1,0 +1,219 @@
+import { rankItems } from "./textSearch";
+
+export type Prompt = {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+  agentId?: string;
+  /** Catalog prompt id, when this was saved from the public catalog. */
+  sourceId?: string;
+  rating?: number;
+  usageCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const STORAGE_KEY = "promptlab_prompts";
+
+const starterPrompts: Prompt[] = [
+  {
+    id: "ux-audit",
+    title: "Senior UX Audit",
+    category: "Design",
+    agentId: "design-partner",
+    content: `Act as a senior product designer and UX researcher.
+
+Audit the provided interface for:
+- usability
+- information hierarchy
+- accessibility
+- interaction clarity
+- consistency
+- mobile responsiveness
+
+Rank issues as Critical, High, Medium, or Low.
+
+For every issue provide:
+1. Problem
+2. Why it matters
+3. Recommended fix`,
+    rating: 4.8,
+    usageCount: 12,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+
+  {
+    id: "prd-writer",
+    title: "PRD Writer",
+    category: "Product",
+    agentId: "product-builder",
+    content: `Act as a senior product manager.
+
+Turn the provided product idea into a concise PRD.
+
+Include:
+- Problem
+- Target users
+- User stories
+- Requirements
+- Non-functional requirements
+- Success metrics
+- Risks
+- MVP scope`,
+    rating: 4.6,
+    usageCount: 8,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+const BACKUP_KEY = "promptlab_prompts_unreadable_backup";
+
+function read(): Prompt[] {
+  const saved = localStorage.getItem(STORAGE_KEY);
+
+  if (!saved) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(starterPrompts));
+    return starterPrompts;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(saved);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (prompt): prompt is Prompt =>
+          Boolean(prompt) &&
+          typeof prompt.id === "string" &&
+          typeof prompt.title === "string" &&
+          typeof prompt.content === "string"
+      );
+    }
+  } catch {
+    // Fall through to the backup below.
+  }
+
+  // The next write would overwrite whatever is there, so keep a copy of the
+  // unreadable value rather than silently destroying someone's library.
+  try {
+    localStorage.setItem(BACKUP_KEY, saved);
+  } catch {
+    // Storage is full; nothing more can be done from here.
+  }
+  return starterPrompts;
+}
+
+function write(prompts: Prompt[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(prompts));
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "QuotaExceededError") {
+      throw new Error(
+        "Browser storage is full, so the library could not be saved. Export your library, then delete prompts or knowledge files you no longer need."
+      );
+    }
+    throw error;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent("promptlab:prompts-updated")
+  );
+}
+
+export const promptStore = {
+  getAll(): Prompt[] {
+    return read();
+  },
+
+  get(id: string): Prompt | undefined {
+    return read().find((prompt) => prompt.id === id);
+  },
+
+  /** Ranked by relevance: title hits first, then category, then body. */
+  search(query: string): Prompt[] {
+    return rankItems(read(), query, (prompt) => [
+      { text: prompt.title, weight: 3 },
+      { text: prompt.category, weight: 1.5 },
+      { text: prompt.content, weight: 1 },
+    ], { minRelativeScore: 0.1 }).map((hit) => hit.item);
+  },
+
+  create(input: {
+    title: string;
+    content: string;
+    category?: string;
+    agentId?: string;
+    sourceId?: string;
+  }): Prompt {
+    const prompts = read();
+
+    const prompt: Prompt = {
+      id: crypto.randomUUID(),
+      title: input.title,
+      content: input.content,
+      category: input.category || "General",
+      agentId: input.agentId,
+      sourceId: input.sourceId,
+      usageCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    write([prompt, ...prompts]);
+
+    return prompt;
+  },
+
+  update(
+    id: string,
+    updates: Partial<
+      Pick<Prompt, "title" | "content" | "category" | "agentId" | "rating">
+    >
+  ): Prompt | null {
+    const prompts = read();
+
+    const index = prompts.findIndex(
+      (prompt) => prompt.id === id
+    );
+
+    if (index === -1) return null;
+
+    prompts[index] = {
+      ...prompts[index],
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+
+    write(prompts);
+
+    return prompts[index];
+  },
+
+  recordUse(id: string): Prompt | null {
+    const prompts = read();
+
+    const index = prompts.findIndex(
+      (prompt) => prompt.id === id
+    );
+
+    if (index === -1) return null;
+
+    prompts[index].usageCount += 1;
+    prompts[index].updatedAt = new Date().toISOString();
+
+    write(prompts);
+
+    return prompts[index];
+  },
+
+  remove(id: string) {
+    write(
+      read().filter((prompt) => prompt.id !== id)
+    );
+  },
+
+  replaceAll(prompts: Prompt[]) {
+    write(prompts);
+  },
+};
